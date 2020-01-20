@@ -1,5 +1,6 @@
 ﻿// MIT License - Copyright (c) 2016 Can Güney Aksakalli
 // https://aksakalli.github.io/2014/02/24/simple-http-server-with-csparp.html
+// Modified by Simon Stockhause
 
 using System;
 using System.Collections.Generic;
