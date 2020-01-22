@@ -8,11 +8,18 @@ using System.Linq;
 using System.Text;
 using System.Text.Json;
 using System.Net.Sockets;
+using System.Threading.Tasks;
+
 using System.Net;
 using System.IO;
 using System.Threading;
 using System.Diagnostics;
+using System.Net.WebSockets;
 
+using OpenTracing.Propagation;
+using OpenTracing;
+using Traktor.Propagation;
+using Traktor;
 
 namespace Httpserver
 {
@@ -162,23 +169,24 @@ namespace Httpserver
         {       
             public int N { get; set; }
         }
-        private void Process(HttpListenerContext context)
+        private async void Process(HttpListenerContext context)
         {
-            using (var scope = Program.tracer.BuildSpan("Process Context").StartActive())
-            {
-                Console.WriteLine("Reading Request");
-                var body = new StreamReader(context.Request.InputStream, Encoding.UTF8).ReadToEnd();       
-                Console.WriteLine(body);
-                var json = JsonSerializer.Deserialize<JsonObject>(body);
-                Console.WriteLine("JSON.N: " + json.N);                     
-                Console.WriteLine("Calculating Fibo");
-                string response = CalculateFiboncacci(json.N).ToString();
-                response = "result=" + response;
-                Console.WriteLine("Building Response");
-                context = BuildRespose(context, response);
-                Console.WriteLine("Closing Response");
-                context.Response.Close();
-            }
+            ISpanContext parentContext = await ReceiveContext();
+            string response;
+            //using (var scope = Program.tracer.BuildSpan("Server: Process Context").AsChildOf(parentContext).StartActive())
+            var span = Program.tracer.BuildSpan("Server: Process Context").AsChildOf(parentContext).Start();
+            Program.tracer.ScopeManager.Activate(span,true);
+            var body = new StreamReader(context.Request.InputStream, Encoding.UTF8).ReadToEnd();       
+            var json = JsonSerializer.Deserialize<JsonObject>(body);
+            response = CalculateFiboncacci(json.N).ToString();
+            response = "result=" + response;
+            byte[] b = Encoding.UTF8.GetBytes(response);
+            context.Response.StatusCode = 200;
+            context.Response.KeepAlive = false;
+            context.Response.ContentLength64 = b.Length;
+            context.Response.OutputStream.Write(b, 0, b.Length);
+            context.Response.Close();
+            span.Finish();
         }
         private int CalculateFiboncacci(int n) 
         {
@@ -201,12 +209,52 @@ namespace Httpserver
         }
         private HttpListenerContext BuildRespose(HttpListenerContext context, string message) 
         {
-            byte[] b = Encoding.UTF8.GetBytes(message);
-            context.Response.StatusCode = 200;
-            context.Response.KeepAlive = false;
-            context.Response.ContentLength64 = b.Length;
-            context.Response.OutputStream.Write(b, 0, b.Length);
+            
             return context;
+        }
+        private async Task<ISpanContext> ReceiveContext()
+        {
+            int initalBufferSize = 512;
+
+            BinaryCarrier carrier = new BinaryCarrier();
+            byte[] buffer = new byte[initalBufferSize];
+            var offset = 0;
+            var free = buffer.Length;
+            WebSocketReceiveResult result;
+            while(true)
+            {
+                /*
+                    Algorithm: https://stackoverflow.com/a/41926694/738359
+                    by Matthias247 checked: 22.01.2020
+                */
+                result = await Program.tracer.registry.ReceiveAsync(new ArraySegment<byte>(buffer,offset,free), CancellationToken.None);
+                if(result.EndOfMessage)
+                {
+                    if(result.Count != 0 || result.CloseStatus == WebSocketCloseStatus.Empty)
+                    {
+                        break;
+                    }
+                    else
+                    {
+                        throw new ArgumentException("Received BinaryCarrier is invalid");
+                    }
+                }
+                if(free==0)
+                {
+                    var newSize = buffer.Length+initalBufferSize;
+                    var newBuffer = new byte[newSize];
+                    Array.Copy(buffer,0,newBuffer,0,offset);
+                    buffer = newBuffer;
+                    free = buffer.Length-offset;
+                }
+            }
+            byte[] ctx = new byte[result.Count];
+            for(int i = 0; i<result.Count;++i)
+            {
+                ctx[i] = buffer[i];
+            }
+            carrier.Set(new MemoryStream(ctx));
+            return Program.tracer.Extract(BuiltinFormats.Binary, carrier);
         }
     }
 }
