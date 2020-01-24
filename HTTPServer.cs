@@ -171,7 +171,7 @@ namespace Httpserver
         }
         private async void Process(HttpListenerContext context)
         {
-            ISpanContext parentContext = await ReceiveContext();
+            ISpanContext parentContext = await Program.tracer.ReceiveContext();
             string response;
             //using (var scope = Program.tracer.BuildSpan("Server: Process Context").AsChildOf(parentContext).StartActive())
             var span = Program.tracer.BuildSpan("Server: Process Context").AsChildOf(parentContext).Start();
@@ -206,55 +206,6 @@ namespace Httpserver
                 _serverThread = new Thread(this.Listen);
                 _serverThread.Start();
  
-        }
-        private HttpListenerContext BuildRespose(HttpListenerContext context, string message) 
-        {
-            
-            return context;
-        }
-        private async Task<ISpanContext> ReceiveContext()
-        {
-            int initalBufferSize = 512;
-
-            BinaryCarrier carrier = new BinaryCarrier();
-            byte[] buffer = new byte[initalBufferSize];
-            var offset = 0;
-            var free = buffer.Length;
-            WebSocketReceiveResult result;
-            while(true)
-            {
-                /*
-                    Algorithm: https://stackoverflow.com/a/41926694/738359
-                    by Matthias247 checked: 22.01.2020
-                */
-                result = await Program.tracer.registry.ReceiveAsync(new ArraySegment<byte>(buffer,offset,free), CancellationToken.None);
-                if(result.EndOfMessage)
-                {
-                    if(result.Count != 0 || result.CloseStatus == WebSocketCloseStatus.Empty)
-                    {
-                        break;
-                    }
-                    else
-                    {
-                        throw new ArgumentException("Received BinaryCarrier is invalid");
-                    }
-                }
-                if(free==0)
-                {
-                    var newSize = buffer.Length+initalBufferSize;
-                    var newBuffer = new byte[newSize];
-                    Array.Copy(buffer,0,newBuffer,0,offset);
-                    buffer = newBuffer;
-                    free = buffer.Length-offset;
-                }
-            }
-            byte[] ctx = new byte[result.Count];
-            for(int i = 0; i<result.Count;++i)
-            {
-                ctx[i] = buffer[i];
-            }
-            carrier.Set(new MemoryStream(ctx));
-            return Program.tracer.Extract(BuiltinFormats.Binary, carrier);
         }
     }
 }
